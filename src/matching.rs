@@ -164,7 +164,7 @@ pub async fn resolve_playlist(
             if needs_manual_review {
                 ambiguous = ambiguous.saturating_sub(1);
             }
-            apply_cached_decision(&mut result, youtube, cached.clone());
+            apply_cached_decision(&mut result, progress, youtube, cached.clone());
             sync_search_progress(&bar, progress, completed, ambiguous);
             continue;
         }
@@ -174,6 +174,7 @@ pub async fn resolve_playlist(
             Err(err) => {
                 push_skip(
                     &mut result,
+                    progress,
                     youtube,
                     format!("match resolution failed: {err}"),
                 );
@@ -202,6 +203,7 @@ pub async fn resolve_playlist(
                     cache.insert(cache_key, None);
                     push_skip(
                         &mut result,
+                        progress,
                         youtube,
                         opencode_skip_reason(opencode_rejection),
                     );
@@ -218,6 +220,7 @@ pub async fn resolve_playlist(
                     Some(candidate) => push_match(&mut result, youtube, candidate),
                     None => push_skip(
                         &mut result,
+                        progress,
                         youtube,
                         "skipped by user or no acceptable match".to_string(),
                     ),
@@ -337,7 +340,7 @@ async fn resolve_with_opencode(
         },
         Err(err) => Ok(CandidateDecision::Prompt {
             candidates,
-            opencode_rejection: Some(format!("opencode failed: {err}")),
+            opencode_rejection: Some(format!("failed: {err}")),
         }),
     }
 }
@@ -964,6 +967,7 @@ fn duration_delta_seconds(youtube_ms: Option<u64>, spotify_ms: Option<u64>) -> O
 
 fn apply_cached_decision(
     result: &mut MatchResult,
+    progress: &Progress,
     youtube: YoutubeTrack,
     cached: Option<ScoredCandidate>,
 ) {
@@ -971,6 +975,7 @@ fn apply_cached_decision(
         Some(candidate) => push_match(result, youtube, candidate),
         None => push_skip(
             result,
+            progress,
             youtube,
             "duplicate of previously skipped track".to_string(),
         ),
@@ -979,8 +984,8 @@ fn apply_cached_decision(
 
 fn opencode_skip_reason(reason: Option<String>) -> String {
     format!(
-        "skipped by --opencode: {}",
-        reason.unwrap_or_else(|| "opencode did not choose a track".to_string())
+        "skipped by opencode: {}",
+        reason.unwrap_or_else(|| "did not choose a track".to_string())
     )
 }
 
@@ -1027,9 +1032,9 @@ fn push_opencode_resolved(
     });
 }
 
-fn push_skip(result: &mut MatchResult, youtube: YoutubeTrack, reason: String) {
+fn push_skip(result: &mut MatchResult, progress: &Progress, youtube: YoutubeTrack, reason: String) {
     let skipped = SkippedTrack { youtube, reason };
-    print_skip(&skipped);
+    print_skip(progress, &skipped);
     result.skipped.push(skipped);
 }
 
@@ -1348,14 +1353,14 @@ fn format_duration(ms: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-fn print_skip(skipped: &SkippedTrack) {
-    eprintln!(
+fn print_skip(progress: &Progress, skipped: &SkippedTrack) {
+    progress.println(format!(
         "ERROR: skipped #{} {} - {}: {}",
         skipped.youtube.index + 1,
         skipped.youtube.artist_display(),
         skipped.youtube.title,
         skipped.reason
-    );
+    ));
 }
 
 #[cfg(test)]

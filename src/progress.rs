@@ -62,6 +62,12 @@ impl Progress {
         self.rendering_paused.load(Ordering::Relaxed)
     }
 
+    pub fn println(&self, message: impl AsRef<str>) {
+        if self.rendering_paused() || self.multi.println(message.as_ref()).is_err() {
+            eprintln!("{}", message.as_ref());
+        }
+    }
+
     pub fn pause_rendering(&self) -> ProgressRenderPause {
         self.rendering_paused.store(true, Ordering::Relaxed);
         self.phase.disable_steady_tick();
