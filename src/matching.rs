@@ -212,8 +212,7 @@ pub async fn resolve_playlist(
                 }
 
                 let pause = progress.pause_rendering();
-                let decision =
-                    prompt_manual_or_skip(spotify, progress, &youtube, candidates).await?;
+                let decision = prompt_manual_or_skip(spotify, &youtube, candidates).await?;
                 drop(pause);
                 ambiguous = ambiguous.saturating_sub(1);
                 cache.insert(cache_key, decision.clone());
@@ -1041,87 +1040,92 @@ fn push_skip(result: &mut MatchResult, progress: &Progress, youtube: YoutubeTrac
 
 async fn prompt_manual_or_skip(
     spotify: &SpotifyClient,
-    progress: &Progress,
     youtube: &YoutubeTrack,
     candidates: Vec<ScoredCandidate>,
 ) -> Result<Option<ScoredCandidate>> {
+    let duration = youtube
+        .duration_ms
+        .map(format_duration)
+        .unwrap_or_else(|| "?:??".to_string());
+    let prompt = format!(
+        "Ambiguous match for #{}\nYouTube: {} - {}\nAlbum: {} | Duration: {} | Video ID: {} | Thumbnails: {}\nChoose Spotify track",
+        youtube.index + 1,
+        youtube.artist_display(),
+        youtube.title,
+        youtube.album.as_deref().unwrap_or("unknown album"),
+        duration,
+        youtube.video_id,
+        youtube.thumbnails.len()
+    );
+
+    let candidate_label = |candidate: &ScoredCandidate| {
+        let track = &candidate.track;
+        format!(
+            "{:.1} | {} - {} | {}",
+            candidate.score,
+            track.artist_display(),
+            track.title,
+            track
+                .duration_ms
+                .map(format_duration)
+                .unwrap_or_else(|| "?:??".to_string())
+        )
+    };
+
+    let select = |prompt: &str, items: &[String]| -> Result<usize> {
+        Ok(Select::with_theme(&ColorfulTheme::default())
+            .with_prompt(prompt)
+            .items(items)
+            .default(0)
+            .interact()?)
+    };
+
     loop {
-        let mut items = candidates.iter().map(format_candidate).collect::<Vec<_>>();
+        let mut items = candidates.iter().map(&candidate_label).collect::<Vec<_>>();
         items.push("Search Spotify with custom query".to_string());
         items.push("Skip".to_string());
 
-        progress.suspend(|| eprintln!("{}", format_youtube_prompt(youtube)));
-        let selection = progress.suspend(|| select_item("Choose Spotify track", &items, 0))?;
+        let selection = select(&prompt, &items)?;
 
         if selection < candidates.len() {
             return Ok(Some(candidates[selection].clone()));
         }
 
-        if selection == candidates.len() {
-            let query: String = progress.suspend(|| {
-                Input::with_theme(&ColorfulTheme::default())
+        match selection - candidates.len() {
+            0 => {
+                let query: String = Input::with_theme(&ColorfulTheme::default())
                     .with_prompt("Custom Spotify search query")
                     .with_initial_text(youtube.search_seed())
-                    .interact_text()
-            })?;
-            let tracks = spotify.search_tracks(&query, 10).await?;
-            let mut manual = tracks
-                .into_iter()
-                .map(|track| score_candidate(youtube, track))
-                .collect::<Vec<_>>();
-            manual.sort_by(|a, b| b.score.total_cmp(&a.score));
-            if manual.is_empty() {
-                progress.suspend(|| eprintln!("No Spotify tracks found for manual query: {query}"));
-                continue;
-            }
+                    .interact_text()?;
+                let tracks = spotify.search_tracks(&query, 10).await?;
+                let mut manual = tracks
+                    .into_iter()
+                    .map(|track| score_candidate(youtube, track))
+                    .collect::<Vec<_>>();
+                manual.sort_by(|a, b| b.score.total_cmp(&a.score));
+                if manual.is_empty() {
+                    println!("No Spotify tracks found for manual query: {query}");
+                    continue;
+                }
 
-            let mut manual_items = manual.iter().map(format_candidate).collect::<Vec<_>>();
-            manual_items.push("Back".to_string());
-            manual_items.push("Skip".to_string());
-            let manual_selection = progress.suspend(|| {
-                select_item(
+                let mut manual_items = manual.iter().map(&candidate_label).collect::<Vec<_>>();
+                manual_items.push("Back".to_string());
+                manual_items.push("Skip".to_string());
+                let manual_selection = select(
                     &format!("Custom search results for #{}: {query}", youtube.index + 1),
                     &manual_items,
-                    0,
-                )
-            })?;
-            if manual_selection < manual.len() {
-                return Ok(Some(manual[manual_selection].clone()));
+                )?;
+                if manual_selection < manual.len() {
+                    return Ok(Some(manual[manual_selection].clone()));
+                }
+                if manual_selection == manual.len() {
+                    continue;
+                }
+                return Ok(None);
             }
-            if manual_selection == manual.len() {
-                continue;
-            }
-            return Ok(None);
+            _ => return Ok(None),
         }
-
-        return Ok(None);
     }
-}
-
-fn select_item(prompt: &str, items: &[String], default: usize) -> Result<usize> {
-    Ok(Select::with_theme(&ColorfulTheme::default())
-        .with_prompt(prompt)
-        .items(items)
-        .default(default.min(items.len().saturating_sub(1)))
-        .interact()?)
-}
-
-fn format_youtube_prompt(youtube: &YoutubeTrack) -> String {
-    let album = youtube.album.as_deref().unwrap_or("unknown album");
-    let duration = youtube
-        .duration_ms
-        .map(format_duration)
-        .unwrap_or_else(|| "?:??".to_string());
-    format!(
-        "Ambiguous match for #{}\nYouTube: {} - {}\nAlbum: {} | Duration: {} | Video ID: {} | Thumbnails: {}",
-        youtube.index + 1,
-        youtube.artist_display(),
-        youtube.title,
-        album,
-        duration,
-        youtube.video_id,
-        youtube.thumbnails.len()
-    )
 }
 
 fn score_candidate(youtube: &YoutubeTrack, spotify: SpotifyTrack) -> ScoredCandidate {
@@ -1332,24 +1336,6 @@ fn decision_cache_key(youtube: &YoutubeTrack) -> String {
             .join(","),
         normalize(&youtube.title),
         youtube.duration_ms.unwrap_or_default()
-    )
-}
-
-fn format_candidate(candidate: &ScoredCandidate) -> String {
-    let track = &candidate.track;
-    let duration = track
-        .duration_ms
-        .map(format_duration)
-        .unwrap_or_else(|| "?:??".to_string());
-    let album = track.album.as_deref().unwrap_or("unknown album");
-    format!(
-        "{:.1} | {} - {} | {} | {} | {}",
-        candidate.score,
-        track.artist_display(),
-        track.title,
-        album,
-        duration,
-        candidate.reason
     )
 }
 

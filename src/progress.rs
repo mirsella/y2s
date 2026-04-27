@@ -68,13 +68,6 @@ impl Progress {
         }
     }
 
-    pub fn suspend<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        self.multi.suspend(f)
-    }
-
     pub fn pause_rendering(&self) -> ProgressRenderPause {
         self.rendering_paused.store(true, Ordering::Relaxed);
         self.phase.disable_steady_tick();
@@ -91,11 +84,11 @@ impl Progress {
 
 impl Drop for ProgressRenderPause {
     fn drop(&mut self) {
-        let _ = self.0.multi.clear();
         self.0.multi.set_draw_target(ProgressDrawTarget::stderr());
         self.0.rendering_paused.store(false, Ordering::Relaxed);
         self.0
             .phase
             .enable_steady_tick(std::time::Duration::from_millis(120));
+        let _ = self.0.multi.clear();
     }
 }
