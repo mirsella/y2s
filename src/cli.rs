@@ -19,7 +19,7 @@ pub struct Cli {
         long,
         value_name = "PROFILE_PATH",
         conflicts_with = "spotify_cookie_file",
-        long_help = "Filesystem path to a browser profile directory or cookie database to read Spotify cookies from. Examples: ~/.config/google-chrome/Default, ~/.config/chromium/Default, ~/.mozilla/firefox/<profile>.default-release, ~/.zen/<profile>, ~/.config/helium/Default, or a Chromium Cookies/Network/Cookies file. The path is tried with Chrome, Chromium, Firefox, Zen, and Helium cookie readers."
+        long_help = "Filesystem path to a browser profile directory or cookie database to read Spotify cookies from. Examples: ~/.config/google-chrome/Default, ~/.mozilla/firefox/<profile>.default-release, ~/.zen/<profile>, ~/.config/helium/Default, or a Chromium-style Cookies/Network/Cookies file. The path is tried with Chrome, Firefox, Zen, and Helium cookie readers."
     )]
     pub browser_profile: Option<PathBuf>,
 

@@ -13,7 +13,6 @@ use crate::{
 
 const COOKIE_SCOOP_BROWSERS: &[BrowserName] = &[
     BrowserName::Chrome,
-    BrowserName::Chromium,
     BrowserName::Firefox,
     BrowserName::Zen,
     BrowserName::Helium,
