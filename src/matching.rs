@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    io::IsTerminal,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -152,16 +151,17 @@ pub async fn resolve_playlist(
         };
 
         completed += 1;
-        let was_prompt = decision_result
-            .as_ref()
-            .is_ok_and(CandidateDecision::is_prompt);
-        if was_prompt {
+        let needs_manual_review = opencode.is_none()
+            && decision_result
+                .as_ref()
+                .is_ok_and(CandidateDecision::is_prompt);
+        if needs_manual_review {
             ambiguous += 1;
         }
 
         let cache_key = decision_cache_key(&youtube);
         if let Some(cached) = cache.get(&cache_key) {
-            if was_prompt {
+            if needs_manual_review {
                 ambiguous = ambiguous.saturating_sub(1);
             }
             apply_cached_decision(&mut result, youtube, cached.clone());
@@ -198,13 +198,12 @@ pub async fn resolve_playlist(
                 candidates,
                 opencode_rejection,
             } => {
-                if opencode.is_some() && !std::io::stdin().is_terminal() {
-                    ambiguous = ambiguous.saturating_sub(1);
+                if opencode.is_some() {
                     cache.insert(cache_key, None);
                     push_skip(
                         &mut result,
                         youtube,
-                        non_tty_opencode_reason(opencode_rejection),
+                        opencode_skip_reason(opencode_rejection),
                     );
                     sync_search_progress(&bar, progress, completed, ambiguous);
                     continue;
@@ -257,7 +256,11 @@ fn spawn_search_task(
             &progress,
             &task,
             if decision.as_ref().is_ok_and(CandidateDecision::is_prompt) {
-                "needs review"
+                if opencode.is_some() {
+                    "skipped"
+                } else {
+                    "needs review"
+                }
             } else {
                 "matched"
             },
@@ -974,9 +977,9 @@ fn apply_cached_decision(
     }
 }
 
-fn non_tty_opencode_reason(reason: Option<String>) -> String {
+fn opencode_skip_reason(reason: Option<String>) -> String {
     format!(
-        "{} and stdin is not a terminal",
+        "skipped by --opencode: {}",
         reason.unwrap_or_else(|| "opencode did not choose a track".to_string())
     )
 }

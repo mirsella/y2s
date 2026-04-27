@@ -27,7 +27,7 @@ pub struct Cli {
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
 
-    /// Let opencode resolve ambiguous matches before prompting.
+    /// Let opencode resolve ambiguous matches automatically, skipping unresolved tracks.
     ///
     /// y2s connects to an existing opencode server at http://127.0.0.1:4096,
     /// or starts one with `opencode serve` if none is running.

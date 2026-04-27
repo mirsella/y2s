@@ -24,7 +24,7 @@ Spotify and YouTube do not describe the same catalog in the same way. Titles are
 - Searches Spotify with scoring tuned for playlist migration.
 - Reuses tracks already present in the target playlist when possible.
 - Prompts only when the match is genuinely ambiguous.
-- Optionally asks `opencode` to resolve ambiguous matches before falling back to manual input.
+- Optionally lets `opencode` resolve ambiguous matches automatically, skipping unresolved tracks.
 - Applies an exact mirror plan so the Spotify playlist ends in the desired order.
 
 ## Install
@@ -87,7 +87,9 @@ Supported cookie input formats include Netscape cookies, JSON maps, and raw `Coo
 
 When scoring cannot safely choose a Spotify result, `y2s` pauses progress rendering and asks you to pick, skip, or enter another Spotify URI.
 
-To let `opencode` try first:
+With `--opencode`, this becomes non-interactive: `opencode` chooses a candidate or `y2s` skips the track.
+
+To make ambiguous resolution fully automatic with `opencode`:
 
 ```bash
 y2s 'PLxxxxxxxxxxxxxxxx' --opencode
@@ -114,7 +116,7 @@ Options:
       --spotify-cookie-file <COOKIE_FILE>  Explicit Spotify cookie file
       --browser-profile <PROFILE_PATH>     Browser profile or cookie database to read Spotify cookies from
       --name <NAME>                         Spotify playlist name to sync into
-      --opencode                            Let opencode resolve ambiguous matches before prompting
+      --opencode                            Let opencode resolve ambiguous matches automatically, skipping unresolved tracks
       --opencode-model <MODEL>              opencode model
       --opencode-variant <VARIANT>          opencode variant
       --opencode-base-url <URL>             Existing opencode server URL
