@@ -17,7 +17,7 @@ base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
 color-eyre = "0.6"
 cookie-scoop = { git = "https://github.com/mirsella/cookie-scoop.git", rev = "e7489017b4db054b1b6e7b313198bb9e0404118c" }
-dialoguer = "0.11"
+dialoguer = "0.12"
 hmac = "0.12"
 html-escape = "0.2"
 indicatif = "0.17"

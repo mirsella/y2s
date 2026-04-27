@@ -212,7 +212,8 @@ pub async fn resolve_playlist(
                 }
 
                 let pause = progress.pause_rendering();
-                let decision = prompt_manual_or_skip(spotify, &youtube, candidates).await?;
+                let decision =
+                    prompt_manual_or_skip(spotify, progress, &youtube, candidates).await?;
                 drop(pause);
                 ambiguous = ambiguous.saturating_sub(1);
                 cache.insert(cache_key, decision.clone());
@@ -1040,27 +1041,29 @@ fn push_skip(result: &mut MatchResult, progress: &Progress, youtube: YoutubeTrac
 
 async fn prompt_manual_or_skip(
     spotify: &SpotifyClient,
+    progress: &Progress,
     youtube: &YoutubeTrack,
     candidates: Vec<ScoredCandidate>,
 ) -> Result<Option<ScoredCandidate>> {
     loop {
-        let prompt = format_youtube_prompt(youtube);
-
         let mut items = candidates.iter().map(format_candidate).collect::<Vec<_>>();
         items.push("Search Spotify with custom query".to_string());
         items.push("Skip".to_string());
 
-        let selection = select_item(&prompt, &items, 0)?;
+        progress.suspend(|| eprintln!("{}", format_youtube_prompt(youtube)));
+        let selection = progress.suspend(|| select_item("Choose Spotify track", &items, 0))?;
 
         if selection < candidates.len() {
             return Ok(Some(candidates[selection].clone()));
         }
 
         if selection == candidates.len() {
-            let query: String = Input::with_theme(&ColorfulTheme::default())
-                .with_prompt("Custom Spotify search query")
-                .with_initial_text(youtube.search_seed())
-                .interact_text()?;
+            let query: String = progress.suspend(|| {
+                Input::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Custom Spotify search query")
+                    .with_initial_text(youtube.search_seed())
+                    .interact_text()
+            })?;
             let tracks = spotify.search_tracks(&query, 10).await?;
             let mut manual = tracks
                 .into_iter()
@@ -1068,18 +1071,20 @@ async fn prompt_manual_or_skip(
                 .collect::<Vec<_>>();
             manual.sort_by(|a, b| b.score.total_cmp(&a.score));
             if manual.is_empty() {
-                println!("No Spotify tracks found for manual query: {query}");
+                progress.suspend(|| eprintln!("No Spotify tracks found for manual query: {query}"));
                 continue;
             }
 
             let mut manual_items = manual.iter().map(format_candidate).collect::<Vec<_>>();
             manual_items.push("Back".to_string());
             manual_items.push("Skip".to_string());
-            let manual_selection = select_item(
-                &format!("Custom search results for #{}: {query}", youtube.index + 1),
-                &manual_items,
-                0,
-            )?;
+            let manual_selection = progress.suspend(|| {
+                select_item(
+                    &format!("Custom search results for #{}: {query}", youtube.index + 1),
+                    &manual_items,
+                    0,
+                )
+            })?;
             if manual_selection < manual.len() {
                 return Ok(Some(manual[manual_selection].clone()));
             }
@@ -1108,7 +1113,7 @@ fn format_youtube_prompt(youtube: &YoutubeTrack) -> String {
         .map(format_duration)
         .unwrap_or_else(|| "?:??".to_string());
     format!(
-        "Ambiguous match for #{}\nYouTube: {} - {}\nAlbum: {} | Duration: {} | Video ID: {} | Thumbnails: {}\nChoose Spotify track",
+        "Ambiguous match for #{}\nYouTube: {} - {}\nAlbum: {} | Duration: {} | Video ID: {} | Thumbnails: {}",
         youtube.index + 1,
         youtube.artist_display(),
         youtube.title,
