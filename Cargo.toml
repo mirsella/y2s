@@ -2,7 +2,7 @@
 name = "y2s"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["mirsella"]
 description = "Mirror YouTube playlists to Spotify."
 readme = "README.md"
@@ -17,16 +17,16 @@ base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
 color-eyre = "0.6"
 cookie-scoop = { git = "https://github.com/mirsella/cookie-scoop.git", rev = "e7489017b4db054b1b6e7b313198bb9e0404118c" }
-dialoguer = "0.11"
-hmac = "0.12"
+dialoguer = "0.12"
+hmac = "0.13"
 html-escape = "0.2"
-indicatif = "0.17"
+indicatif = "0.18"
 once_cell = "1.21"
 opencode_rs = { version = "0.7", features = ["server"] }
 regex = "1.12"
-reqwest = { version = "0.12", default-features = false, features = ["brotli", "charset", "cookies", "deflate", "gzip", "json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["brotli", "charset", "cookies", "deflate", "gzip", "json", "query", "rustls"] }
 serde_json = "1"
-sha1 = "0.10"
+sha1 = "0.11"
 strsim = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "sync", "time"] }

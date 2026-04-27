@@ -5,7 +5,7 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use regex::Regex;
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde_json::{Value, json};

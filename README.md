@@ -7,7 +7,7 @@
 [![Rust CI](https://github.com/mirsella/y2s/actions/workflows/rust.yml/badge.svg)](https://github.com/mirsella/y2s/actions/workflows/rust.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-111827.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/rust-2024-f97316.svg)](Cargo.toml)
-[![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-2563eb.svg)](Cargo.toml)
+[![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-2563eb.svg)](Cargo.toml)
 
 `y2s` turns a public YouTube playlist into a Spotify playlist with the same order, the same contents, and no silent drift.
 
