@@ -45,14 +45,21 @@ async fn run(cli: Cli) -> Result<()> {
     )?;
 
     let playlist_name = explicit_name.as_deref().unwrap_or(&youtube_playlist.title);
-    let mut spotify_state = load_spotify_playlist(
-        &progress,
-        spotify,
-        playlist_name,
-        cli.dry_run,
-        explicit_name.is_none(),
-    )
-    .await?;
+    progress.set_phase(if cli.use_opencode() {
+        "loading Spotify playlist and opencode resolver"
+    } else {
+        "loading Spotify playlist"
+    });
+    let (mut spotify_state, opencode) = tokio::try_join!(
+        load_spotify_playlist(
+            &progress,
+            spotify,
+            playlist_name,
+            cli.dry_run,
+            explicit_name.is_none(),
+        ),
+        connect_opencode(&cli, &progress)
+    )?;
 
     if !cli.dry_run && spotify_state.playlist_would_be_created {
         let (playlist, current, playlist_would_be_created) =
@@ -70,18 +77,6 @@ async fn run(cli: Cli) -> Result<()> {
     } = spotify_state;
 
     progress.set_phase("searching and matching Spotify tracks");
-    let opencode = if cli.use_opencode() {
-        Some(
-            opencode::OpencodeResolver::connect(opencode::OpencodeConfig::new(
-                cli.opencode_base_url.clone(),
-                cli.opencode_model.clone(),
-                cli.opencode_variant.clone(),
-            ))
-            .await?,
-        )
-    } else {
-        None
-    };
     let matches = matching::resolve_playlist(
         &spotify,
         &youtube_playlist.tracks,
@@ -198,6 +193,25 @@ async fn connect_spotify(cli: &Cli, progress: &Progress) -> Result<SpotifyClient
     let spotify = SpotifyClient::connect(cookies).await;
     spinner.finish_and_clear();
     spotify
+}
+
+async fn connect_opencode(
+    cli: &Cli,
+    progress: &Progress,
+) -> Result<Option<opencode::OpencodeResolver>> {
+    if !cli.use_opencode() {
+        return Ok(None);
+    }
+
+    let spinner = progress.spinner("connecting opencode resolver");
+    let resolver = opencode::OpencodeResolver::connect(opencode::OpencodeConfig::new(
+        cli.opencode_base_url.clone(),
+        cli.opencode_model.clone(),
+        cli.opencode_variant.clone(),
+    ))
+    .await;
+    spinner.finish_and_clear();
+    resolver.map(Some)
 }
 
 async fn load_spotify_playlist(

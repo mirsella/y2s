@@ -121,7 +121,7 @@ Options:
       --opencode-variant <VARIANT>          opencode variant
       --opencode-base-url <URL>             Existing opencode server URL
       --dry-run                             Print planned Spotify mutations without applying them
-      --concurrency <CONCURRENCY>           Maximum concurrent Spotify search requests [default: 8]
+      --concurrency <CONCURRENCY>           Maximum tracks to search on Spotify at once [default: 10]
       --limit <LIMIT>                       Development/debug cap for tracks to process
   -h, --help                                Print help
   -V, --version                             Print version

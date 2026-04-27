@@ -4,6 +4,8 @@ use clap::Parser;
 
 use crate::error::{AppError, Result};
 
+const DEFAULT_CONCURRENCY: usize = 10;
+
 #[derive(Debug, Parser)]
 #[command(version, about = "Mirror a YouTube playlist to Spotify")]
 pub struct Cli {
@@ -62,8 +64,8 @@ pub struct Cli {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Maximum number of concurrent Spotify search requests.
-    #[arg(long, default_value_t = 8)]
+    /// Maximum number of tracks to search on Spotify at once.
+    #[arg(long, default_value_t = DEFAULT_CONCURRENCY)]
     pub concurrency: usize,
 
     /// Development/debug cap for the number of YouTube tracks to process.
