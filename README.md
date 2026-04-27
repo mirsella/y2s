@@ -63,13 +63,19 @@ y2s 'PLxxxxxxxxxxxxxxxx' --dry-run
 
 ## Spotify Login
 
-`y2s` uses Spotify web session cookies from your browser. You can either let it read a browser profile directly:
+`y2s` uses your existing Spotify web session from a logged-in browser. In the normal case, there is nothing to configure: run the command and let `y2s` auto-detect usable Spotify cookies from supported browser profiles.
+
+```bash
+y2s 'PLxxxxxxxxxxxxxxxx'
+```
+
+If you use multiple browser profiles or keep cookies in a non-standard location, point `y2s` at the profile directly:
 
 ```bash
 y2s 'PLxxxxxxxxxxxxxxxx' --browser-profile ~/.config/google-chrome/Default
 ```
 
-Or pass a cookie export file:
+As a last resort, pass a cookie export file:
 
 ```bash
 y2s 'PLxxxxxxxxxxxxxxxx' --spotify-cookie-file ./spotify-cookies.txt
