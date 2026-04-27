@@ -248,7 +248,7 @@ fn resolver_prompt(youtube: &YoutubeTrack, candidates: &[ScoredCandidate]) -> St
         .unwrap_or("unknown".into());
     let album = youtube.album.as_deref().unwrap_or("unknown");
     let mut prompt = format!(
-        "You are resolving an ambiguous YouTube Music to Spotify track match.\n\
+        "You are resolving an ambiguous YouTube to Spotify track match.\n\
 Choose the Spotify candidate that is most likely the same song/release a human would want in a synced playlist. Avoid false positives, but do not return null just because YouTube duration/title metadata looks like an upload edit when there is one clear official Spotify version by the same artist/title.\n\
 Prefer exact artist/title, same release/album when known, and closest duration. Never choose covers or tribute versions over the original artist. Do not choose live/acoustic/radio/edit/remix/slowed/sped variants unless the YouTube metadata indicates that variant, but if the exact YouTube-only edit is unavailable, choose the closest official original by the same artist/title instead of null. A remastered original by the exact artist is acceptable when no non-remastered original candidate is present. If multiple candidates are duplicate releases of the same recording, prefer the album/LP release over a single unless YouTube metadata indicates the single.\n\
 Treat official audio, visualizer, visualette, lyric video, from-album/video labels, braces, emojis, and punctuation differences as non-musical presentation noise.\n\

@@ -99,7 +99,7 @@ pub async fn fetch_playlist(
 
     if tracks.is_empty() {
         return Err(AppError::Youtube(format!(
-            "no tracks found for playlist {playlist_id}; it may be private, unavailable, or not a YouTube Music-compatible public playlist"
+            "no tracks found for playlist {playlist_id}; it may be private, unavailable, or not a compatible public YouTube playlist"
         )));
     }
 

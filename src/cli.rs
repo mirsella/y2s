@@ -5,9 +5,9 @@ use clap::Parser;
 use crate::error::{AppError, Result};
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Exact-mirror a public YouTube playlist into Spotify")]
+#[command(version, about = "Mirror a YouTube playlist to Spotify")]
 pub struct Cli {
-    /// Public YouTube or YouTube Music playlist URL, or a raw playlist ID.
+    /// Public YouTube playlist URL, or a raw playlist ID.
     pub youtube_playlist_url: String,
 
     /// Explicit Spotify cookie file. Supports Netscape, JSON map, or raw Cookie header.

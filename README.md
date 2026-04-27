@@ -2,7 +2,7 @@
 
 # y2s
 
-**Exact-mirror public YouTube and YouTube Music playlists into Spotify.**
+**Mirror YouTube playlists to Spotify.**
 
 [![Rust CI](https://github.com/mirsella/y2s/actions/workflows/rust.yml/badge.svg)](https://github.com/mirsella/y2s/actions/workflows/rust.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-111827.svg)](LICENSE)
@@ -19,7 +19,7 @@ Spotify and YouTube do not describe the same catalog in the same way. Titles are
 
 `y2s` is built as a sharp local CLI instead:
 
-- Fetches public YouTube and YouTube Music playlists through Innertube.
+- Fetches public YouTube playlists through Innertube.
 - Authenticates to Spotify with your existing browser session cookies.
 - Searches Spotify with scoring tuned for playlist migration.
 - Reuses tracks already present in the target playlist when possible.
@@ -108,7 +108,7 @@ y2s 'PLxxxxxxxxxxxxxxxx' \
 Usage: y2s [OPTIONS] <YOUTUBE_PLAYLIST_URL>
 
 Arguments:
-  <YOUTUBE_PLAYLIST_URL>  Public YouTube or YouTube Music playlist URL, or a raw playlist ID
+  <YOUTUBE_PLAYLIST_URL>  Public YouTube playlist URL, or a raw playlist ID
 
 Options:
       --spotify-cookie-file <COOKIE_FILE>  Explicit Spotify cookie file
