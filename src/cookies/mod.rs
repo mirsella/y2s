@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, sync::Arc};
+use std::{collections::HashSet, fs, sync::Arc};
 
 use cookie_scoop::{BrowserName, Cookie, CookieMode, GetCookiesOptions, get_cookies};
 use dialoguer::{Select, theme::ColorfulTheme};
@@ -17,8 +17,14 @@ const COOKIE_SCOOP_BROWSERS: &[BrowserName] = &[
     BrowserName::Zen,
     BrowserName::Helium,
 ];
-const SPOTIFY_COOKIE_DOMAINS: &[&str] =
-    &["spotify.com", "open.spotify.com", "accounts.spotify.com"];
+const SPOTIFY_COOKIE_DOMAIN: &str = "spotify.com";
+const SPOTIFY_WEB_ORIGIN: &str = "https://open.spotify.com";
+const SPOTIFY_COOKIE_ORIGINS: [&str; 4] = [
+    "https://spotify.com",
+    SPOTIFY_WEB_ORIGIN,
+    "https://www.spotify.com",
+    "https://accounts.spotify.com",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserCookie {
@@ -107,9 +113,10 @@ pub fn cookie_value<'a>(cookies: &'a [BrowserCookie], name: &str) -> Option<&'a 
 
 pub fn is_spotify_domain(domain: &str) -> bool {
     let domain = domain.trim_start_matches('.').to_ascii_lowercase();
-    SPOTIFY_COOKIE_DOMAINS
-        .iter()
-        .any(|candidate| domain == *candidate || domain.ends_with(&format!(".{candidate}")))
+    domain == SPOTIFY_COOKIE_DOMAIN
+        || domain
+            .strip_suffix(SPOTIFY_COOKIE_DOMAIN)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 fn parse_json_cookie_map(contents: &str) -> Result<Vec<BrowserCookie>> {
@@ -129,11 +136,8 @@ fn parse_json_cookie_map(contents: &str) -> Result<Vec<BrowserCookie>> {
 }
 
 fn parse_raw_cookie_header(contents: &str) -> Result<Vec<BrowserCookie>> {
-    let header = contents
-        .trim()
-        .strip_prefix("Cookie:")
-        .unwrap_or(contents)
-        .trim();
+    let trimmed = contents.trim();
+    let header = trimmed.strip_prefix("Cookie:").unwrap_or(trimmed).trim();
     let cookies = header
         .split(';')
         .filter_map(|pair| {
@@ -155,7 +159,7 @@ fn parse_netscape_cookie_jar(contents: &str) -> Result<Vec<BrowserCookie>> {
     let mut cookies = Vec::new();
     for (line_no, line) in contents.lines().enumerate() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') && !line.starts_with("#HttpOnly_") {
+        if line.is_empty() || (line.starts_with('#') && !line.starts_with("#HttpOnly_")) {
             continue;
         }
 
@@ -253,7 +257,8 @@ fn choose_cookie_candidate(
 }
 
 fn spotify_cookie_options(browser: BrowserName) -> GetCookiesOptions {
-    GetCookiesOptions::new("https://open.spotify.com")
+    GetCookiesOptions::new(SPOTIFY_WEB_ORIGIN)
+        .origins(SPOTIFY_COOKIE_ORIGINS.map(str::to_owned).to_vec())
         .browsers(vec![browser])
         .mode(CookieMode::First)
 }
@@ -286,9 +291,7 @@ fn ensure_spotify_cookie_shape(cookies: &[BrowserCookie], source: &str) -> Resul
 }
 
 fn has_spotify_session_cookie(cookies: &[BrowserCookie]) -> bool {
-    cookies
-        .iter()
-        .any(|cookie| cookie.name == "sp_dc" && !cookie.value.is_empty())
+    cookie_value(cookies, "sp_dc").is_some_and(|value| !value.is_empty())
 }
 
 async fn validate_candidate(candidate: &CookieCandidate) -> Result<bool> {
@@ -330,21 +333,20 @@ fn add_cookie_to_jar(jar: &Jar, cookie: &BrowserCookie) -> Result<()> {
 }
 
 pub fn dedupe_cookies(cookies: Vec<BrowserCookie>) -> Vec<BrowserCookie> {
-    cookies
+    let mut seen = HashSet::new();
+    let mut deduped = cookies
         .into_iter()
-        .map(|cookie| {
-            (
-                (
-                    cookie.domain.clone(),
-                    cookie.path.clone(),
-                    cookie.name.clone(),
-                ),
-                cookie,
-            )
+        .rev()
+        .filter(|cookie| {
+            seen.insert((
+                cookie.domain.clone(),
+                cookie.path.clone(),
+                cookie.name.clone(),
+            ))
         })
-        .collect::<HashMap<_, _>>()
-        .into_values()
-        .collect()
+        .collect::<Vec<_>>();
+    deduped.reverse();
+    deduped
 }
 
 #[cfg(test)]
@@ -370,5 +372,28 @@ mod tests {
         let cookies = parse_cookie_file(input).unwrap();
         assert_eq!(cookies[0].domain, ".spotify.com");
         assert_eq!(cookies[0].name, "sp_dc");
+    }
+
+    #[test]
+    fn dedupe_cookies_keeps_last_duplicate_in_order() {
+        let cookies = dedupe_cookies(vec![
+            BrowserCookie::spotify_default("sp_dc", "old"),
+            BrowserCookie::spotify_default("sp_key", "key"),
+            BrowserCookie::spotify_default("sp_dc", "new"),
+        ]);
+
+        assert_eq!(cookies.len(), 2);
+        assert_eq!(cookies[0].name, "sp_key");
+        assert_eq!(cookies[1].name, "sp_dc");
+        assert_eq!(cookies[1].value, "new");
+    }
+
+    #[test]
+    fn spotify_cookie_options_include_spotify_parent_origins() {
+        let options = spotify_cookie_options(BrowserName::Zen);
+        assert_eq!(
+            options.origins,
+            Some(SPOTIFY_COOKIE_ORIGINS.map(str::to_owned).to_vec())
+        );
     }
 }

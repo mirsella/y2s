@@ -187,16 +187,12 @@ impl OpencodeConfig {
 
 async fn healthy_client(base_url: &str) -> Result<Client> {
     let client = client(base_url)?;
-    client
-        .global()
-        .health()
-        .await
-        .ok()
-        .filter(|healthy| *healthy)
-        .map(|_| client)
-        .ok_or_else(|| {
-            AppError::InvalidInput(format!("opencode server at {base_url} is not healthy"))
-        })
+    match client.global().health().await {
+        Ok(health) if health.healthy => Ok(client),
+        _ => Err(AppError::InvalidInput(format!(
+            "opencode server at {base_url} is not healthy"
+        ))),
+    }
 }
 
 fn client(base_url: &str) -> Result<Client> {
@@ -217,13 +213,13 @@ fn no_choice(reason: impl Into<String>) -> OpencodeResolution {
 
 fn text_from_value(value: &Value) -> Option<&str> {
     value.get("parts")?.as_array()?.iter().find_map(|part| {
-        (part.get("type").and_then(Value::as_str) == Some("text"))
-            .then(|| {
-                part.get("text")
-                    .or_else(|| part.get("content"))
-                    .and_then(Value::as_str)
-            })
-            .flatten()
+        if part.get("type").and_then(Value::as_str) != Some("text") {
+            return None;
+        }
+
+        part.get("text")
+            .or_else(|| part.get("content"))
+            .and_then(Value::as_str)
             .filter(|text| !text.trim().is_empty())
     })
 }
@@ -333,11 +329,12 @@ fn extract_json_object(text: &str) -> Option<&str> {
 fn model_ref(value: &str) -> ModelRef {
     let (provider_id, model_id) = value
         .split_once('/')
-        .map(|(provider, model)| (Some(provider.to_string()), Some(model.to_string())))
-        .unwrap_or_else(|| (None, Some(value.to_string())));
+        .map(|(provider, model)| (Some(provider.to_owned()), Some(model.to_owned())))
+        .unwrap_or_else(|| (None, Some(value.to_owned())));
     ModelRef {
         provider_id,
         model_id,
+        variant: None,
         extra: Value::Null,
     }
 }
@@ -364,6 +361,7 @@ mod tests {
         let model = request.model.unwrap();
         assert_eq!(model.provider_id.as_deref(), Some("opencode"));
         assert_eq!(model.model_id.as_deref(), Some("minimax-m2.5-free"));
+        assert!(model.variant.is_none());
         assert_eq!(request.variant.as_deref(), Some("build"));
         assert!(request.agent.is_none());
     }
