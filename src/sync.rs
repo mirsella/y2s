@@ -1,32 +1,57 @@
-use crate::{
-    error::Result,
-    model::{PlaylistSnapshot, SyncPlan},
-    progress::Progress,
-    spotify::SpotifyClient,
-};
+use crate::{error::Result, model::PlaylistSnapshot, progress::Progress, spotify::SpotifyClient};
 
-pub fn plan_exact_mirror(snapshot: &PlaylistSnapshot, desired_uris: Vec<String>) -> SyncPlan {
-    let current_uris = snapshot
-        .items
-        .iter()
-        .map(|item| item.track.uri.clone())
-        .collect::<Vec<_>>();
-    let changed = current_uris != desired_uris;
+#[derive(Debug)]
+pub struct SyncPlan {
+    playlist_uri: String,
+    remove_uids: Vec<String>,
+    add_uris: Vec<String>,
+}
+
+impl SyncPlan {
+    pub fn is_noop(&self) -> bool {
+        self.remove_uids.is_empty() && self.add_uris.is_empty()
+    }
+
+    pub fn removed_count(&self) -> usize {
+        self.remove_uids.len()
+    }
+
+    pub fn added_count(&self) -> usize {
+        self.add_uris.len()
+    }
+}
+
+pub fn plan_exact_mirror(snapshot: &PlaylistSnapshot, desired_uris: &[String]) -> SyncPlan {
+    let mut retained = vec![false; snapshot.items.len()];
+    let mut next_search_index = 0;
+    let mut kept_prefix_len = 0;
+
+    // With only remove-by-UID and append operations, the stable base is the
+    // longest desired prefix already present as an ordered subsequence.
+    for desired_uri in desired_uris {
+        let Some(offset) = snapshot.items[next_search_index..]
+            .iter()
+            .position(|item| item.track.uri == *desired_uri)
+        else {
+            break;
+        };
+
+        let current_index = next_search_index + offset;
+        retained[current_index] = true;
+        next_search_index = current_index + 1;
+        kept_prefix_len += 1;
+    }
 
     SyncPlan {
         playlist_uri: snapshot.uri.clone(),
-        current_uris,
-        remove_uids: if changed {
-            snapshot.items.iter().map(|item| item.uid.clone()).collect()
-        } else {
-            Vec::new()
-        },
-        add_uris: if changed {
-            desired_uris.clone()
-        } else {
-            Vec::new()
-        },
-        desired_uris,
+        remove_uids: snapshot
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !retained[*index])
+            .map(|(_, item)| item.uid.clone())
+            .collect(),
+        add_uris: desired_uris[kept_prefix_len..].to_vec(),
     }
 }
 
@@ -101,30 +126,48 @@ mod tests {
         }
     }
 
+    fn plan(current: &[&str], desired: &[&str]) -> SyncPlan {
+        let desired = desired
+            .iter()
+            .map(|uri| (*uri).to_string())
+            .collect::<Vec<_>>();
+        plan_exact_mirror(&snapshot(current), &desired)
+    }
+
     #[test]
     fn identical_playlist_is_noop() {
-        let plan = plan_exact_mirror(
-            &snapshot(&["a", "b"]),
-            vec!["a".to_string(), "b".to_string()],
-        );
+        let plan = plan(&["a", "b"], &["a", "b"]);
         assert!(plan.is_noop());
         assert!(plan.remove_uids.is_empty());
     }
 
     #[test]
-    fn reordered_playlist_rebuilds() {
-        let plan = plan_exact_mirror(
-            &snapshot(&["a", "b"]),
-            vec!["b".to_string(), "a".to_string()],
-        );
+    fn deleted_tracks_are_removed_without_rebuilding() {
+        let plan = plan(&["a", "skip", "b", "c", "skip-2"], &["a", "b", "c"]);
         assert!(!plan.is_noop());
-        assert_eq!(plan.remove_uids, vec!["uid-0", "uid-1"]);
-        assert_eq!(plan.add_uris, vec!["b", "a"]);
+        assert_eq!(plan.remove_uids, vec!["uid-1", "uid-4"]);
+        assert!(plan.add_uris.is_empty());
+    }
+
+    #[test]
+    fn middle_insert_rebuilds_only_the_suffix() {
+        let plan = plan(&["a", "c", "d"], &["a", "b", "c", "d"]);
+        assert_eq!(plan.remove_uids, vec!["uid-1", "uid-2"]);
+        assert_eq!(plan.add_uris, vec!["b", "c", "d"]);
+    }
+
+    #[test]
+    fn reordered_playlist_moves_earlier_tracks_to_the_bottom() {
+        let plan = plan(&["a", "b"], &["b", "a"]);
+        assert!(!plan.is_noop());
+        assert_eq!(plan.remove_uids, vec!["uid-0"]);
+        assert_eq!(plan.add_uris, vec!["a"]);
     }
 
     #[test]
     fn duplicate_tracks_are_preserved_in_desired_order() {
-        let plan = plan_exact_mirror(&snapshot(&["a"]), vec!["a".to_string(), "a".to_string()]);
-        assert_eq!(plan.add_uris, vec!["a", "a"]);
+        let plan = plan(&["a"], &["a", "a"]);
+        assert!(plan.remove_uids.is_empty());
+        assert_eq!(plan.add_uris, vec!["a"]);
     }
 }

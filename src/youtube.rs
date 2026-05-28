@@ -82,8 +82,10 @@ pub async fn fetch_playlist(
             tracks.len()
         ));
 
-        if limit.is_some_and(|max| tracks.len() >= max) {
-            tracks.truncate(limit.expect("checked Some"));
+        if let Some(max) = limit
+            && tracks.len() >= max
+        {
+            tracks.truncate(max);
             break;
         }
 
@@ -214,31 +216,66 @@ fn collect_tracks(
         return;
     }
 
+    if let Some(contents) = find_playlist_rows(value) {
+        collect_playlist_rows(contents, tracks, seen_video_ids, limit);
+    }
+}
+
+fn find_playlist_rows(value: &Value) -> Option<&[Value]> {
     match value {
         Value::Object(map) => {
-            if let Some(renderer) = map.get("musicResponsiveListItemRenderer")
-                && let Some(track) = parse_track(renderer, tracks.len())
-                && seen_video_ids.insert(track.video_id.clone())
-            {
-                tracks.push(track);
+            for key in [
+                "musicPlaylistShelfRenderer",
+                "musicPlaylistShelfContinuation",
+            ] {
+                if let Some(shelf) = map.get(key) {
+                    return Some(
+                        shelf
+                            .get("contents")
+                            .and_then(Value::as_array)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                    );
+                }
             }
 
-            for child in map.values() {
-                collect_tracks(child, tracks, seen_video_ids, limit);
-                if limit.is_some_and(|max| tracks.len() >= max) {
-                    return;
-                }
+            if let Some(action) = map.get("appendContinuationItemsAction") {
+                return Some(
+                    action
+                        .get("continuationItems")
+                        .and_then(Value::as_array)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                );
             }
+
+            map.values().find_map(find_playlist_rows)
         }
-        Value::Array(items) => {
-            for child in items {
-                collect_tracks(child, tracks, seen_video_ids, limit);
-                if limit.is_some_and(|max| tracks.len() >= max) {
-                    return;
-                }
-            }
+        Value::Array(items) => items.iter().find_map(find_playlist_rows),
+        _ => None,
+    }
+}
+
+fn collect_playlist_rows(
+    contents: &[Value],
+    tracks: &mut Vec<YoutubeTrack>,
+    seen_video_ids: &mut HashSet<String>,
+    limit: Option<usize>,
+) {
+    for item in contents {
+        if limit.is_some_and(|max| tracks.len() >= max) {
+            return;
         }
-        _ => {}
+
+        let Some(renderer) = item.get("musicResponsiveListItemRenderer") else {
+            continue;
+        };
+        let Some(track) = parse_track(renderer, tracks.len()) else {
+            continue;
+        };
+        if seen_video_ids.insert(track.video_id.clone()) {
+            tracks.push(track);
+        }
     }
 }
 
@@ -556,5 +593,84 @@ mod tests {
             find_playlist_continuation(&value).as_deref(),
             Some("track-page-token")
         );
+    }
+
+    #[test]
+    fn collects_only_playlist_shelf_rows() {
+        let tracks = collect(json!({
+            "contents": {
+                "musicPlaylistShelfRenderer": {
+                    "contents": [track_row("playlist-video", "Playlist Song")]
+                }
+            },
+            "otherShelf": track_row("related-video", "Related Song")
+        }));
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].video_id, "playlist-video");
+        assert_eq!(tracks[0].title, "Playlist Song");
+    }
+
+    #[test]
+    fn ignores_non_playlist_row_lists() {
+        let tracks = collect(json!({
+            "otherShelf": {
+                "contents": [track_row("related-video", "Related Song")]
+            }
+        }));
+
+        assert!(tracks.is_empty());
+    }
+
+    #[test]
+    fn collects_appended_continuation_rows() {
+        let tracks = collect(json!({
+            "onResponseReceivedActions": [{
+                "appendContinuationItemsAction": {
+                    "continuationItems": [track_row("continued-video", "Continued Song")]
+                }
+            }]
+        }));
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].video_id, "continued-video");
+    }
+
+    fn collect(value: Value) -> Vec<YoutubeTrack> {
+        let mut tracks = Vec::new();
+        let mut seen = HashSet::new();
+        collect_tracks(&value, &mut tracks, &mut seen, None);
+        tracks
+    }
+
+    fn track_row(video_id: &str, title: &str) -> Value {
+        json!({
+            "musicResponsiveListItemRenderer": {
+                "playlistItemData": {"videoId": video_id},
+                "flexColumns": [
+                    {
+                        "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": [{"text": title}]}
+                        }
+                    },
+                    {
+                        "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": [{
+                                "text": "Artist",
+                                "navigationEndpoint": {
+                                    "browseEndpoint": {
+                                        "browseEndpointContextSupportedConfigs": {
+                                            "browseEndpointContextMusicConfig": {
+                                                "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                                            }
+                                        }
+                                    }
+                                }
+                            }]}
+                        }
+                    }
+                ]
+            }
+        })
     }
 }

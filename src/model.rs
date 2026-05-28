@@ -110,18 +110,3 @@ pub struct MatchResult {
     pub skipped: Vec<SkippedTrack>,
     pub opencode_resolved: Vec<OpencodeResolvedTrack>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncPlan {
-    pub playlist_uri: String,
-    pub current_uris: Vec<String>,
-    pub desired_uris: Vec<String>,
-    pub remove_uids: Vec<String>,
-    pub add_uris: Vec<String>,
-}
-
-impl SyncPlan {
-    pub fn is_noop(&self) -> bool {
-        self.current_uris == self.desired_uris
-    }
-}

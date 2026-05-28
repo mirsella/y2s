@@ -92,7 +92,7 @@ async fn run(cli: Cli) -> Result<()> {
         .iter()
         .map(|matched| matched.spotify.uri.clone())
         .collect::<Vec<_>>();
-    let plan = sync::plan_exact_mirror(&current, desired_uris);
+    let plan = sync::plan_exact_mirror(&current, &desired_uris);
 
     progress.set_phase(if cli.dry_run {
         "building dry-run summary"
@@ -133,14 +133,14 @@ async fn run(cli: Cli) -> Result<()> {
     } else if cli.dry_run {
         println!(
             "Dry run: would remove {} entries and add {} entries",
-            plan.remove_uids.len(),
-            plan.add_uris.len()
+            plan.removed_count(),
+            plan.added_count()
         );
     } else {
         println!(
             "Sync applied: removed {} entries and added {} entries",
-            plan.remove_uids.len(),
-            plan.add_uris.len()
+            plan.removed_count(),
+            plan.added_count()
         );
     }
 
@@ -182,6 +182,12 @@ async fn run(cli: Cli) -> Result<()> {
                 ),
             }
         }
+    }
+
+    if let Some(id) = spotify_playlist.uri.strip_prefix("spotify:playlist:")
+        && !id.is_empty()
+    {
+        println!("Spotify playlist link: https://open.spotify.com/playlist/{id}");
     }
 
     Ok(())
