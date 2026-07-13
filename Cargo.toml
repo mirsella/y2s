@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "multimedia"]
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
 color-eyre = "0.6"
-cookie-scoop = { git = "https://github.com/mirsella/cookie-scoop.git", rev = "e7489017b4db054b1b6e7b313198bb9e0404118c" }
+cookie-scoop = { git = "https://github.com/mirsella/cookie-scoop.git", rev = "24ebc85a6bccf900a1bdc94bdbc6076682e469b6" }
 dialoguer = "0.12"
 hmac = "0.13"
 html-escape = "0.2"
