@@ -902,10 +902,7 @@ fn search_result_auto_match_is_safe(youtube: &YoutubeTrack, candidate: &ScoredCa
 fn existing_playlist_match_is_safe(youtube: &YoutubeTrack, candidate: &ScoredCandidate) -> bool {
     candidate.score >= EXISTING_PLAYLIST_MIN_SCORE
         && title_similarity(youtube, &candidate.track) >= EXISTING_PLAYLIST_TITLE_THRESHOLD
-        && (primary_artist_similarity(&youtube.artists, &candidate.track.artists)
-            >= EXISTING_PLAYLIST_ARTIST_THRESHOLD
-            || artist_set_similarity(&youtube.artists, &candidate.track.artists)
-                >= EXISTING_PLAYLIST_ARTIST_SET_THRESHOLD)
+        && existing_artist_match_is_safe(youtube, &candidate.track)
         && durations_compatible(
             youtube.duration_ms,
             candidate.track.duration_ms,
@@ -917,11 +914,19 @@ fn existing_sequence_match_is_safe(youtube: &YoutubeTrack, candidate: &ScoredCan
     candidate.score >= EXISTING_SEQUENCE_MIN_SCORE
         && (title_similarity(youtube, &candidate.track) >= EXISTING_SEQUENCE_TITLE_THRESHOLD
             || cleaned_title_similarity(youtube, &candidate.track) >= 0.82)
+        && existing_artist_match_is_safe(youtube, &candidate.track)
         && durations_compatible(
             youtube.duration_ms,
             candidate.track.duration_ms,
             EXISTING_SEQUENCE_DURATION_SECONDS,
         )
+}
+
+fn existing_artist_match_is_safe(youtube: &YoutubeTrack, spotify: &SpotifyTrack) -> bool {
+    primary_artist_similarity(&youtube.artists, &spotify.artists)
+        >= EXISTING_PLAYLIST_ARTIST_THRESHOLD
+        || artist_set_similarity(&youtube.artists, &spotify.artists)
+            >= EXISTING_PLAYLIST_ARTIST_SET_THRESHOLD
 }
 
 fn same_index_existing_match_is_safe(youtube: &YoutubeTrack, candidate: &ScoredCandidate) -> bool {
@@ -1700,5 +1705,13 @@ mod tests {
             matches[0].as_ref().unwrap().track.title,
             "Song - Radio Edit"
         );
+    }
+
+    #[test]
+    fn existing_sequence_rejects_similar_title_from_wrong_artist() {
+        let youtube = yt("Demons", "Imagine Dragons", Some(177000));
+        let candidate = score_candidate(&youtube, sp("Come", "Jain", Some(162000)));
+
+        assert!(!existing_sequence_match_is_safe(&youtube, &candidate));
     }
 }
