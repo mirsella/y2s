@@ -100,12 +100,21 @@ impl SpotifyClient {
             let text = response.text().await?;
 
             if status.is_success() {
-                return serde_json::from_str(&text).map_err(|err| {
+                let value: Value = serde_json::from_str(&text).map_err(|err| {
                     AppError::Spotify(format!(
                         "failed to parse Spotify GraphQL response for {operation} as JSON: {err}; body: {}",
                         body_excerpt(&text)
                     ))
-                });
+                })?;
+                if value.get("errors").is_some_and(
+                    |errors| !matches!(errors, Value::Array(items) if items.is_empty()),
+                ) {
+                    return Err(AppError::Spotify(format!(
+                        "Spotify GraphQL operation {operation} returned errors: {}",
+                        body_excerpt(&text)
+                    )));
+                }
+                return Ok(value);
             }
 
             if status == StatusCode::UNAUTHORIZED && !refreshed_access {

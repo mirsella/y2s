@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{Map, Value, json};
@@ -10,6 +10,9 @@ use crate::{
     model::{PlaylistSnapshot, SpotifyPlaylistItem, SpotifyPlaylistSummary},
     spotify::{SpotifyClient, search},
 };
+
+// Larger private Pathfinder additions have been observed returning successful no-ops.
+const ADD_BATCH_SIZE: usize = 25;
 
 impl SpotifyClient {
     pub async fn find_playlist_by_name(
@@ -123,17 +126,31 @@ impl SpotifyClient {
         Ok(())
     }
 
-    pub async fn add_tracks_to_playlist(&self, playlist_uri: &str, uris: &[String]) -> Result<()> {
-        for chunk in uris.chunks(100) {
+    pub async fn insert_playlist_items(
+        &self,
+        playlist_uri: &str,
+        uris: &[String],
+        after_uid: Option<&str>,
+    ) -> Result<()> {
+        let move_type = if after_uid.is_some() {
+            "AFTER_UID"
+        } else {
+            "TOP_OF_PLAYLIST"
+        };
+
+        // Repeated insertion at one anchor reverses request order, so work
+        // backward while preserving the order within each request.
+        for chunk in uris.rchunks(ADD_BATCH_SIZE) {
             let variables = json!({
                 "playlistUri": playlist_uri,
                 "playlistItemUris": chunk,
                 "newPosition": {
-                    "moveType": "BOTTOM_OF_PLAYLIST",
-                    "fromUid": null,
+                    "moveType": move_type,
+                    "fromUid": after_uid,
                 }
             });
             self.graph_query("addToPlaylist", variables).await?;
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
         Ok(())
     }

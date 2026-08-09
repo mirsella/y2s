@@ -92,7 +92,7 @@ async fn run(cli: Cli) -> Result<()> {
         .iter()
         .map(|matched| matched.spotify.uri.clone())
         .collect::<Vec<_>>();
-    let plan = sync::plan_exact_mirror(&current, &desired_uris);
+    let plan = sync::plan_exact_mirror(&current, desired_uris);
 
     progress.set_phase(if cli.dry_run {
         "building dry-run summary"
