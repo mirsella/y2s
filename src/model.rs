@@ -89,6 +89,13 @@ pub struct MatchedTrack {
     pub youtube: YoutubeTrack,
     pub spotify: SpotifyTrack,
     pub score: f64,
+    pub source: MatchSource,
+}
+
+#[derive(Debug, Clone)]
+pub enum MatchSource {
+    WithoutOpencode,
+    Opencode { reason: Option<String> },
 }
 
 #[derive(Debug, Clone)]
@@ -97,16 +104,8 @@ pub struct SkippedTrack {
     pub reason: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct OpencodeResolvedTrack {
-    pub youtube: YoutubeTrack,
-    pub spotify: SpotifyTrack,
-    pub reason: Option<String>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct MatchResult {
     pub matched: Vec<MatchedTrack>,
     pub skipped: Vec<SkippedTrack>,
-    pub opencode_resolved: Vec<OpencodeResolvedTrack>,
 }

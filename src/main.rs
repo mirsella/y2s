@@ -5,6 +5,7 @@ mod matching;
 mod model;
 mod opencode;
 mod progress;
+mod report;
 mod spotify;
 mod sync;
 mod youtube;
@@ -38,36 +39,22 @@ async fn run(cli: Cli) -> Result<()> {
     let progress = Progress::new();
 
     progress.set_phase("loading YouTube playlist and Spotify session");
-    let explicit_name = cli.name.as_deref().map(str::trim).map(str::to_string);
+    let explicit_name = cli.name.as_deref().map(str::trim);
     let (youtube_playlist, spotify) = tokio::try_join!(
         youtube::fetch_playlist(&cli.youtube_playlist_url, cli.limit, &progress),
         connect_spotify(&cli, &progress)
     )?;
 
-    let playlist_name = explicit_name.as_deref().unwrap_or(&youtube_playlist.title);
+    let playlist_name = explicit_name.unwrap_or(&youtube_playlist.title);
     progress.set_phase(if cli.use_opencode() {
         "loading Spotify playlist and opencode resolver"
     } else {
         "loading Spotify playlist"
     });
-    let (mut spotify_state, opencode) = tokio::try_join!(
-        load_spotify_playlist(
-            &progress,
-            spotify,
-            playlist_name,
-            cli.dry_run,
-            explicit_name.is_none(),
-        ),
+    let (spotify_state, opencode) = tokio::try_join!(
+        load_spotify_playlist(&progress, spotify, playlist_name, cli.dry_run),
         connect_opencode(&cli, &progress)
     )?;
-
-    if !cli.dry_run && spotify_state.playlist_would_be_created {
-        let (playlist, current, playlist_would_be_created) =
-            create_playlist_snapshot(&spotify_state.client, &progress, playlist_name).await?;
-        spotify_state.playlist = playlist;
-        spotify_state.current = current;
-        spotify_state.playlist_would_be_created = playlist_would_be_created;
-    }
 
     let SpotifyState {
         client: spotify,
@@ -102,93 +89,17 @@ async fn run(cli: Cli) -> Result<()> {
     sync::execute_plan(&spotify, &plan, cli.dry_run, &progress).await?;
     progress.finish();
 
-    println!("Playlist: {}", youtube_playlist.title);
-    println!("YouTube playlist ID: {}", youtube_playlist.id);
-    println!("YouTube tracks: {}", youtube_playlist.tracks.len());
-    println!("Matched tracks: {}", matches.matched.len());
-    if !matches.matched.is_empty() {
-        let average_score = matches
-            .matched
-            .iter()
-            .map(|matched| matched.score)
-            .sum::<f64>()
-            / matches.matched.len() as f64;
-        println!("Average match score: {:.1}", average_score);
-    }
-    println!("Skipped tracks: {}", matches.skipped.len());
-    if playlist_would_be_created {
-        println!(
-            "Spotify playlist: {} (would be created)",
-            spotify_playlist.name
-        );
-    } else {
-        println!(
-            "Spotify playlist: {} ({})",
-            spotify_playlist.name, spotify_playlist.uri
-        );
-    }
-
-    if plan.is_noop() {
-        println!("Sync: already exact");
-    } else if cli.dry_run {
-        println!(
-            "Dry run: would remove {} entries and add {} entries",
-            plan.removed_count(),
-            plan.added_count()
-        );
-    } else {
-        println!(
-            "Sync applied: removed {} entries and added {} entries",
-            plan.removed_count(),
-            plan.added_count()
-        );
-    }
-
-    if !matches.skipped.is_empty() {
-        println!("Skipped track summary:");
-        for skipped in &matches.skipped {
-            println!(
-                "- #{} {} - {}: {}",
-                skipped.youtube.index + 1,
-                skipped.youtube.artist_display(),
-                skipped.youtube.title,
-                skipped.reason
-            );
-        }
-    }
-
-    if !matches.opencode_resolved.is_empty() {
-        println!("opencode resolved tracks:");
-        for resolved in &matches.opencode_resolved {
-            match &resolved.reason {
-                Some(reason) if !reason.trim().is_empty() => println!(
-                    "- #{} {} - {} -> {} - {} ({}) [{}]",
-                    resolved.youtube.index + 1,
-                    resolved.youtube.artist_display(),
-                    resolved.youtube.title,
-                    resolved.spotify.artist_display(),
-                    resolved.spotify.title,
-                    resolved.spotify.uri,
-                    reason
-                ),
-                _ => println!(
-                    "- #{} {} - {} -> {} - {} ({})",
-                    resolved.youtube.index + 1,
-                    resolved.youtube.artist_display(),
-                    resolved.youtube.title,
-                    resolved.spotify.artist_display(),
-                    resolved.spotify.title,
-                    resolved.spotify.uri
-                ),
-            }
-        }
-    }
-
-    if let Some(id) = spotify_playlist.uri.strip_prefix("spotify:playlist:")
-        && !id.is_empty()
-    {
-        println!("Spotify playlist link: https://open.spotify.com/playlist/{id}");
-    }
+    print!(
+        "{}",
+        report::format_report(
+            &youtube_playlist,
+            &spotify_playlist,
+            &matches,
+            &plan,
+            cli.dry_run,
+            playlist_would_be_created,
+        )
+    );
 
     Ok(())
 }
@@ -225,7 +136,6 @@ async fn load_spotify_playlist(
     spotify: SpotifyClient,
     playlist_name: &str,
     dry_run: bool,
-    create_missing: bool,
 ) -> Result<SpotifyState> {
     let spinner = progress.spinner(format!("finding Spotify playlist {playlist_name:?}"));
     let playlist = spotify.find_playlist_by_name(playlist_name).await?;
@@ -240,8 +150,14 @@ async fn load_spotify_playlist(
             spinner.finish_and_clear();
             (playlist, current, false)
         }
-        None if dry_run || !create_missing => synthetic_playlist(playlist_name),
-        None => create_playlist_snapshot(&spotify, progress, playlist_name).await?,
+        None if dry_run => synthetic_playlist(playlist_name),
+        None => {
+            let spinner = progress.spinner(format!("creating Spotify playlist {playlist_name:?}"));
+            let playlist = spotify.create_playlist(playlist_name).await?;
+            spinner.finish_and_clear();
+            let current = empty_snapshot(&playlist);
+            (playlist, current, false)
+        }
     };
 
     Ok(SpotifyState {
@@ -250,18 +166,6 @@ async fn load_spotify_playlist(
         current,
         playlist_would_be_created,
     })
-}
-
-async fn create_playlist_snapshot(
-    spotify: &SpotifyClient,
-    progress: &Progress,
-    name: &str,
-) -> Result<(SpotifyPlaylistSummary, PlaylistSnapshot, bool)> {
-    let spinner = progress.spinner(format!("creating Spotify playlist {name:?}"));
-    let playlist = spotify.create_playlist(name).await?;
-    spinner.finish_and_clear();
-    let current = empty_snapshot(&playlist);
-    Ok((playlist, current, false))
 }
 
 fn synthetic_playlist(name: &str) -> (SpotifyPlaylistSummary, PlaylistSnapshot, bool) {

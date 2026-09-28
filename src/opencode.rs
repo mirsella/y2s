@@ -44,7 +44,8 @@ impl OpencodeResolution {
     pub fn rejection_reason(&self) -> String {
         self.reason
             .as_ref()
-            .map(|reason| format!("did not choose a track: {reason}"))
+            .filter(|reason| !reason.trim().is_empty())
+            .cloned()
             .unwrap_or_else(|| "did not choose a track".to_string())
     }
 }

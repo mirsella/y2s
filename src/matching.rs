@@ -18,8 +18,8 @@ use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 use crate::{
     error::{AppError, Result},
     model::{
-        MatchResult, MatchedTrack, OpencodeResolvedTrack, PlaylistSnapshot, ScoredCandidate,
-        SkippedTrack, SpotifyTrack, YoutubeTrack,
+        MatchResult, MatchSource, MatchedTrack, PlaylistSnapshot, ScoredCandidate, SkippedTrack,
+        SpotifyTrack, YoutubeTrack,
     },
     opencode::OpencodeResolver,
     progress::Progress,
@@ -55,26 +55,18 @@ const OPENCODE_CANDIDATE_LIMIT: usize = 12;
 const LOCAL_REUSE_CANDIDATE_LIMIT: usize = 8;
 
 enum CandidateDecision {
-    Accept {
+    Matched {
         candidate: ScoredCandidate,
-        opencode_reason: Option<String>,
+        source: MatchSource,
     },
-    Prompt {
-        candidates: Vec<ScoredCandidate>,
-        opencode_rejection: Option<String>,
-    },
+    Review(Vec<ScoredCandidate>),
+    Missed(String),
 }
 
 #[derive(Debug, Clone)]
 struct LocalReuseCandidate {
     existing_index: usize,
     candidate: ScoredCandidate,
-}
-
-impl CandidateDecision {
-    fn is_prompt(&self) -> bool {
-        matches!(self, Self::Prompt { .. })
-    }
 }
 
 pub async fn resolve_playlist(
@@ -86,161 +78,138 @@ pub async fn resolve_playlist(
     progress: &Progress,
 ) -> Result<MatchResult> {
     let mut result = MatchResult::default();
-    let mut cache: HashMap<String, Option<ScoredCandidate>> = HashMap::new();
     let mut used_existing = HashSet::new();
     let existing_matches =
         reuse_existing_matches(youtube_tracks, current, &mut used_existing, progress).await;
-
-    for (youtube, candidate) in youtube_tracks.iter().cloned().zip(existing_matches.iter()) {
-        if let Some(candidate) = candidate {
-            cache.insert(decision_cache_key(&youtube), Some(candidate.clone()));
-            push_match(&mut result, youtube, candidate.clone());
+    let mut unmatched = Vec::new();
+    for (youtube, candidate) in youtube_tracks.iter().cloned().zip(existing_matches) {
+        match candidate {
+            Some(candidate) => push_match(
+                &mut result,
+                youtube,
+                candidate,
+                MatchSource::WithoutOpencode,
+            ),
+            None => unmatched.push(youtube),
         }
     }
+    let mut search_groups = group_searches(unmatched, &mut result);
 
-    let search_inputs = youtube_tracks
-        .iter()
-        .cloned()
-        .enumerate()
-        .filter(|(index, _)| existing_matches[*index].is_none())
-        .map(|(_, track)| track)
-        .collect::<Vec<_>>();
-
-    if search_inputs.is_empty() {
+    if search_groups.is_empty() {
         result.matched.sort_by_key(|matched| matched.youtube.index);
         return Ok(result);
     }
 
-    let search_count = search_inputs.len();
+    let search_count = search_groups.len();
     let bar = progress.track_bar(search_count, "searching Spotify");
-    let mut inputs = search_inputs.into_iter();
+    let mut inputs = 0..search_count;
     let mut tasks = JoinSet::new();
     for _ in 0..concurrency.max(1).min(search_count) {
-        if let Some(youtube) = inputs.next() {
+        if let Some(index) = inputs.next() {
             spawn_search_task(
                 &mut tasks,
                 spotify.clone(),
                 opencode.cloned(),
                 progress.clone(),
-                youtube,
+                index,
+                search_groups[index][0].clone(),
             );
         }
     }
 
-    let mut completed = 0usize;
-    let mut ambiguous = 0usize;
     while let Some(joined) = tasks.join_next().await {
-        if let Some(youtube) = inputs.next() {
+        let (index, decision_result) = joined
+            .map_err(|err| AppError::Spotify(format!("Spotify search task failed: {err}")))?;
+        if let Some(next_index) = inputs.next() {
             spawn_search_task(
                 &mut tasks,
                 spotify.clone(),
                 opencode.cloned(),
                 progress.clone(),
-                youtube,
+                next_index,
+                search_groups[next_index][0].clone(),
             );
-        }
-
-        let (youtube, decision_result) = match joined {
-            Ok(pair) => pair,
-            Err(err) => {
-                eprintln!("ERROR: Spotify search task failed: {err}");
-                completed += 1;
-                sync_search_progress(&bar, progress, completed, ambiguous);
-                continue;
-            }
-        };
-
-        completed += 1;
-        let needs_manual_review = opencode.is_none()
-            && decision_result
-                .as_ref()
-                .is_ok_and(CandidateDecision::is_prompt);
-        if needs_manual_review {
-            ambiguous += 1;
-        }
-
-        let cache_key = decision_cache_key(&youtube);
-        if let Some(cached) = cache.get(&cache_key) {
-            if needs_manual_review {
-                ambiguous = ambiguous.saturating_sub(1);
-            }
-            apply_cached_decision(&mut result, progress, youtube, cached.clone());
-            sync_search_progress(&bar, progress, completed, ambiguous);
-            continue;
         }
 
         let decision = match decision_result {
-            Ok(decision) => decision,
-            Err(err) => {
-                push_skip(
-                    &mut result,
-                    progress,
-                    youtube,
-                    format!("match resolution failed: {err}"),
-                );
-                cache.insert(cache_key, None);
-                sync_search_progress(&bar, progress, completed, ambiguous);
-                continue;
-            }
-        };
-
-        match decision {
-            CandidateDecision::Accept {
-                candidate,
-                opencode_reason,
-            } => {
-                if opencode_reason.is_some() {
-                    push_opencode_resolved(&mut result, &youtube, &candidate, opencode_reason);
-                }
-                cache.insert(cache_key, Some(candidate.clone()));
-                push_match(&mut result, youtube, candidate);
-            }
-            CandidateDecision::Prompt {
-                candidates,
-                opencode_rejection,
-            } => {
-                if opencode.is_some() {
-                    cache.insert(cache_key, None);
-                    push_skip(
-                        &mut result,
-                        progress,
-                        youtube,
-                        opencode_skip_reason(opencode_rejection),
-                    );
-                    sync_search_progress(&bar, progress, completed, ambiguous);
-                    continue;
-                }
-
+            Ok(CandidateDecision::Review(candidates)) => {
+                let youtube = &search_groups[index][0];
                 let pause = progress.pause_rendering();
-                let decision = prompt_manual_or_skip(spotify, &youtube, candidates).await?;
+                let choice = prompt_manual_or_skip(spotify, youtube, candidates).await?;
                 drop(pause);
-                ambiguous = ambiguous.saturating_sub(1);
-                cache.insert(cache_key, decision.clone());
-                match decision {
-                    Some(candidate) => push_match(&mut result, youtube, candidate),
-                    None => push_skip(
-                        &mut result,
-                        progress,
-                        youtube,
-                        "skipped by user or no acceptable match".to_string(),
-                    ),
+                match choice {
+                    Some(candidate) => CandidateDecision::Matched {
+                        candidate,
+                        source: MatchSource::WithoutOpencode,
+                    },
+                    None => {
+                        CandidateDecision::Missed("skipped by user or no acceptable match".into())
+                    }
                 }
+            }
+            Ok(decision) => decision,
+            Err(err) => CandidateDecision::Missed(format!("match resolution failed: {err}")),
+        };
+        for youtube in std::mem::take(&mut search_groups[index]) {
+            match &decision {
+                CandidateDecision::Matched { candidate, source } => {
+                    push_match(&mut result, youtube, candidate.clone(), source.clone());
+                }
+                CandidateDecision::Missed(reason) => {
+                    push_skip(&mut result, youtube, reason.clone())
+                }
+                CandidateDecision::Review(_) => unreachable!("manual review completed above"),
             }
         }
-        sync_search_progress(&bar, progress, completed, ambiguous);
+        bar.inc(1);
     }
     bar.finish_and_clear();
 
-    sort_match_result(&mut result);
+    result.matched.sort_by_key(|matched| matched.youtube.index);
+    result.skipped.sort_by_key(|skipped| skipped.youtube.index);
 
     Ok(result)
 }
 
+fn group_searches(
+    unmatched: Vec<YoutubeTrack>,
+    result: &mut MatchResult,
+) -> Vec<Vec<YoutubeTrack>> {
+    let reused = result
+        .matched
+        .iter()
+        .enumerate()
+        .map(|(index, matched)| (decision_cache_key(&matched.youtube), index))
+        .collect::<HashMap<_, _>>();
+    let mut groups: Vec<Vec<YoutubeTrack>> = Vec::new();
+    let mut group_by_key: HashMap<_, usize> = HashMap::new();
+
+    for youtube in unmatched {
+        let key = decision_cache_key(&youtube);
+        if let Some(&index) = reused.get(&key) {
+            let existing = &result.matched[index];
+            result.matched.push(MatchedTrack {
+                youtube,
+                spotify: existing.spotify.clone(),
+                score: existing.score,
+                source: MatchSource::WithoutOpencode,
+            });
+        } else if let Some(&index) = group_by_key.get(&key) {
+            groups[index].push(youtube);
+        } else {
+            group_by_key.insert(key, groups.len());
+            groups.push(vec![youtube]);
+        }
+    }
+    groups
+}
+
 fn spawn_search_task(
-    tasks: &mut JoinSet<(YoutubeTrack, Result<CandidateDecision>)>,
+    tasks: &mut JoinSet<(usize, Result<CandidateDecision>)>,
     spotify: SpotifyClient,
     opencode: Option<OpencodeResolver>,
     progress: Progress,
+    index: usize,
     youtube: YoutubeTrack,
 ) {
     tasks.spawn(async move {
@@ -251,52 +220,23 @@ fn spawn_search_task(
             youtube.title
         ));
         let decision = search_and_classify(&spotify, &youtube).await;
-        if opencode.is_some() && decision.as_ref().is_ok_and(CandidateDecision::is_prompt) {
+        if opencode.is_some() && matches!(&decision, Ok(CandidateDecision::Review(_))) {
             set_task_message(&progress, &task, "asking opencode", &youtube);
         }
         let decision = resolve_with_opencode(opencode.as_ref(), &youtube, decision).await;
         set_task_message(
             &progress,
             &task,
-            if decision.as_ref().is_ok_and(CandidateDecision::is_prompt) {
-                if opencode.is_some() {
-                    "skipped"
-                } else {
-                    "needs review"
-                }
-            } else {
-                "matched"
+            match &decision {
+                Ok(CandidateDecision::Matched { .. }) => "matched",
+                Ok(CandidateDecision::Review(_)) => "needs review",
+                Ok(CandidateDecision::Missed(_)) | Err(_) => "missed",
             },
             &youtube,
         );
         task.finish_and_clear();
-        (youtube, decision)
+        (index, decision)
     });
-}
-
-fn sync_search_progress(
-    bar: &ProgressBar,
-    progress: &Progress,
-    completed: usize,
-    ambiguous: usize,
-) {
-    if progress.rendering_paused() {
-        return;
-    }
-    bar.set_position(completed as u64);
-    bar.set_message(if ambiguous == 0 {
-        "searching Spotify".to_string()
-    } else {
-        format!("searching Spotify · {ambiguous} need review")
-    });
-}
-
-fn sort_match_result(result: &mut MatchResult) {
-    result.matched.sort_by_key(|matched| matched.youtube.index);
-    result.skipped.sort_by_key(|skipped| skipped.youtube.index);
-    result
-        .opencode_resolved
-        .sort_by_key(|resolved| resolved.youtube.index);
 }
 
 async fn resolve_with_opencode(
@@ -304,44 +244,31 @@ async fn resolve_with_opencode(
     youtube: &YoutubeTrack,
     decision: Result<CandidateDecision>,
 ) -> Result<CandidateDecision> {
-    let (candidates, opencode_rejection) = match decision? {
-        CandidateDecision::Accept {
-            candidate,
-            opencode_reason,
-        } => {
-            return Ok(CandidateDecision::Accept {
-                candidate,
-                opencode_reason,
-            });
-        }
-        CandidateDecision::Prompt {
-            candidates,
-            opencode_rejection,
-        } => (candidates, opencode_rejection),
+    let candidates = match decision? {
+        CandidateDecision::Review(candidates) => candidates,
+        decision => return Ok(decision),
     };
 
     let Some(opencode) = opencode else {
-        return Ok(CandidateDecision::Prompt {
-            candidates,
-            opencode_rejection,
-        });
+        return Ok(CandidateDecision::Review(candidates));
     };
 
     match opencode.resolve(youtube, &candidates).await {
         Ok(resolution) => match resolution.candidate {
-            Some(candidate) => Ok(CandidateDecision::Accept {
+            Some(candidate) => Ok(CandidateDecision::Matched {
                 candidate,
-                opencode_reason: resolution.reason,
+                source: MatchSource::Opencode {
+                    reason: resolution.reason,
+                },
             }),
-            None => Ok(CandidateDecision::Prompt {
-                candidates,
-                opencode_rejection: Some(resolution.rejection_reason()),
-            }),
+            None => Ok(CandidateDecision::Missed(format!(
+                "opencode: {}",
+                resolution.rejection_reason()
+            ))),
         },
-        Err(err) => Ok(CandidateDecision::Prompt {
-            candidates,
-            opencode_rejection: Some(format!("failed: {err}")),
-        }),
+        Err(err) => Ok(CandidateDecision::Missed(format!(
+            "opencode: failed: {err}"
+        ))),
     }
 }
 
@@ -758,40 +685,37 @@ fn classify_candidates(
     let second = candidates.get(1);
     if let Some(top) = top {
         if let Some(candidate) = text_confident_auto_match(youtube, &candidates) {
-            return CandidateDecision::Accept {
+            return CandidateDecision::Matched {
                 candidate,
-                opencode_reason: None,
+                source: MatchSource::WithoutOpencode,
             };
         }
         if let Some(candidate) = close_duration_text_artist_auto_match(youtube, &candidates) {
-            return CandidateDecision::Accept {
+            return CandidateDecision::Matched {
                 candidate,
-                opencode_reason: None,
+                source: MatchSource::WithoutOpencode,
             };
         }
         let gap = second
             .map(|candidate| top.score - candidate.score)
             .unwrap_or(100.0);
         if search_result_auto_match_is_safe(youtube, top) && gap >= AUTO_ACCEPT_GAP {
-            return CandidateDecision::Accept {
+            return CandidateDecision::Matched {
                 candidate: top.clone(),
-                opencode_reason: None,
+                source: MatchSource::WithoutOpencode,
             };
         }
         if top.score >= DURATION_TIE_SCORE
             && let Some(candidate) = best_same_duration_tie(youtube, &candidates)
         {
-            return CandidateDecision::Accept {
+            return CandidateDecision::Matched {
                 candidate,
-                opencode_reason: None,
+                source: MatchSource::WithoutOpencode,
             };
         }
     }
 
-    CandidateDecision::Prompt {
-        candidates,
-        opencode_rejection: None,
-    }
+    CandidateDecision::Review(candidates)
 }
 
 fn text_confident_auto_match(
@@ -970,30 +894,6 @@ fn duration_delta_seconds(youtube_ms: Option<u64>, spotify_ms: Option<u64>) -> O
     Some(youtube_ms.abs_diff(spotify_ms) as f64 / 1000.0)
 }
 
-fn apply_cached_decision(
-    result: &mut MatchResult,
-    progress: &Progress,
-    youtube: YoutubeTrack,
-    cached: Option<ScoredCandidate>,
-) {
-    match cached {
-        Some(candidate) => push_match(result, youtube, candidate),
-        None => push_skip(
-            result,
-            progress,
-            youtube,
-            "duplicate of previously skipped track".to_string(),
-        ),
-    }
-}
-
-fn opencode_skip_reason(reason: Option<String>) -> String {
-    format!(
-        "skipped by opencode: {}",
-        reason.unwrap_or_else(|| "did not choose a track".to_string())
-    )
-}
-
 fn set_task_message(progress: &Progress, task: &ProgressBar, stage: &str, youtube: &YoutubeTrack) {
     if progress.rendering_paused() {
         return;
@@ -1016,31 +916,22 @@ fn durations_compatible(
         .unwrap_or(true)
 }
 
-fn push_match(result: &mut MatchResult, youtube: YoutubeTrack, candidate: ScoredCandidate) {
+fn push_match(
+    result: &mut MatchResult,
+    youtube: YoutubeTrack,
+    candidate: ScoredCandidate,
+    source: MatchSource,
+) {
     result.matched.push(MatchedTrack {
         youtube,
         spotify: candidate.track,
         score: candidate.score,
+        source,
     });
 }
 
-fn push_opencode_resolved(
-    result: &mut MatchResult,
-    youtube: &YoutubeTrack,
-    candidate: &ScoredCandidate,
-    reason: Option<String>,
-) {
-    result.opencode_resolved.push(OpencodeResolvedTrack {
-        youtube: youtube.clone(),
-        spotify: candidate.track.clone(),
-        reason,
-    });
-}
-
-fn push_skip(result: &mut MatchResult, progress: &Progress, youtube: YoutubeTrack, reason: String) {
-    let skipped = SkippedTrack { youtube, reason };
-    print_skip(progress, &skipped);
-    result.skipped.push(skipped);
+fn push_skip(result: &mut MatchResult, youtube: YoutubeTrack, reason: String) {
+    result.skipped.push(SkippedTrack { youtube, reason });
 }
 
 async fn prompt_manual_or_skip(
@@ -1349,16 +1240,6 @@ fn format_duration(ms: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-fn print_skip(progress: &Progress, skipped: &SkippedTrack) {
-    progress.println(format!(
-        "ERROR: skipped #{} {} - {}: {}",
-        skipped.youtube.index + 1,
-        skipped.youtube.artist_display(),
-        skipped.youtube.title,
-        skipped.reason
-    ));
-}
-
 #[cfg(test)]
 mod tests {
     use crate::model::SpotifyPlaylistItem;
@@ -1484,12 +1365,13 @@ mod tests {
         ];
 
         match classify_candidates(&youtube, candidates) {
-            CandidateDecision::Accept { candidate, .. } => {
+            CandidateDecision::Matched { candidate, .. } => {
                 assert_eq!(candidate.track.uri, "spotify:track:1");
             }
-            CandidateDecision::Prompt { .. } => {
+            CandidateDecision::Review(_) => {
                 panic!("close-duration high match should auto-accept")
             }
+            CandidateDecision::Missed(_) => unreachable!(),
         }
     }
 
@@ -1524,10 +1406,11 @@ mod tests {
         ];
 
         match classify_candidates(&youtube, candidates) {
-            CandidateDecision::Accept { candidate, .. } => {
+            CandidateDecision::Matched { candidate, .. } => {
                 assert_eq!(candidate.track.uri, "spotify:track:short");
             }
-            CandidateDecision::Prompt { .. } => panic!("same-duration tie should auto-accept"),
+            CandidateDecision::Review(_) => panic!("same-duration tie should auto-accept"),
+            CandidateDecision::Missed(_) => unreachable!(),
         }
     }
 
@@ -1539,10 +1422,11 @@ mod tests {
         let candidate = score_candidate(&youtube, track);
 
         match classify_candidates(&youtube, vec![candidate]) {
-            CandidateDecision::Accept { .. } => {
+            CandidateDecision::Matched { .. } => {
                 panic!("secondary artist match should not auto-accept")
             }
-            CandidateDecision::Prompt { .. } => {}
+            CandidateDecision::Review(_) => {}
+            CandidateDecision::Missed(_) => unreachable!(),
         }
     }
 
@@ -1552,8 +1436,9 @@ mod tests {
         let candidate = score_candidate(&youtube, sp("Song - Live", "Artist", Some(180000)));
 
         match classify_candidates(&youtube, vec![candidate]) {
-            CandidateDecision::Accept { .. } => panic!("variant marker mismatch should prompt"),
-            CandidateDecision::Prompt { .. } => {}
+            CandidateDecision::Matched { .. } => panic!("variant marker mismatch should prompt"),
+            CandidateDecision::Review(_) => {}
+            CandidateDecision::Missed(_) => unreachable!(),
         }
     }
 
@@ -1583,12 +1468,13 @@ mod tests {
         candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
 
         match classify_candidates(&youtube, candidates) {
-            CandidateDecision::Accept { candidate, .. } => {
+            CandidateDecision::Matched { candidate, .. } => {
                 assert_eq!(candidate.track.uri, "spotify:track:drag-path");
             }
-            CandidateDecision::Prompt { .. } => {
+            CandidateDecision::Review(_) => {
                 panic!("exact title and only matching artist should auto-accept")
             }
+            CandidateDecision::Missed(_) => unreachable!(),
         }
     }
 
@@ -1613,10 +1499,11 @@ mod tests {
         candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
 
         match classify_candidates(&youtube, candidates) {
-            CandidateDecision::Accept { .. } => {
+            CandidateDecision::Matched { .. } => {
                 panic!("same-artist alternatives should stay ambiguous")
             }
-            CandidateDecision::Prompt { .. } => {}
+            CandidateDecision::Review(_) => {}
+            CandidateDecision::Missed(_) => unreachable!(),
         }
     }
 
@@ -1681,12 +1568,13 @@ mod tests {
         candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
 
         match classify_candidates(&youtube, candidates) {
-            CandidateDecision::Accept { candidate, .. } => {
+            CandidateDecision::Matched { candidate, .. } => {
                 assert_eq!(candidate.track.uri, "spotify:track:exact");
             }
-            CandidateDecision::Prompt { .. } => {
+            CandidateDecision::Review(_) => {
                 panic!("close exact title/artist set should auto-accept")
             }
+            CandidateDecision::Missed(_) => unreachable!(),
         }
     }
 
@@ -1713,5 +1601,37 @@ mod tests {
         let candidate = score_candidate(&youtube, sp("Come", "Jain", Some(162000)));
 
         assert!(!existing_sequence_match_is_safe(&youtube, &candidate));
+    }
+
+    #[test]
+    fn groups_duplicate_searches_and_reuses_existing_matches() {
+        let mut result = MatchResult::default();
+        let existing = yt("Already there", "Artist", Some(180000));
+        push_match(
+            &mut result,
+            existing.clone(),
+            score_candidate(&existing, sp("Already there", "Artist", Some(180000))),
+            MatchSource::WithoutOpencode,
+        );
+        let mut existing_duplicate = existing;
+        existing_duplicate.index = 3;
+        let mut duplicate = yt("New song", "Artist", Some(180000));
+        duplicate.index = 2;
+        let mut first = duplicate.clone();
+        first.index = 1;
+
+        let groups = group_searches(vec![first, duplicate, existing_duplicate], &mut result);
+
+        assert_eq!(result.matched.len(), 2);
+        assert_eq!(result.matched[1].youtube.index, 3);
+        assert_eq!(result.matched[1].spotify.uri, result.matched[0].spotify.uri);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0]
+                .iter()
+                .map(|track| track.index)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
 }

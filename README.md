@@ -89,6 +89,8 @@ When scoring cannot safely choose a Spotify result, `y2s` pauses progress render
 
 With `--opencode`, this becomes non-interactive: `opencode` chooses a candidate or `y2s` skips the track.
 
+At the end, the report lists every matched YouTube position under either "Matched without opencode" or "Matched with opencode". The opencode section includes its reasons when provided. "Missed" lists tracks left out of the Spotify playlist and why. The summary counts use the same groups, including repeated songs at different playlist positions.
+
 To make ambiguous resolution fully automatic with `opencode`:
 
 ```bash
